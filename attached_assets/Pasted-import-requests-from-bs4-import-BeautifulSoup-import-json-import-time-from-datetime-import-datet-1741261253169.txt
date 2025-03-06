@@ -1,0 +1,157 @@
+import requests
+from bs4 import BeautifulSoup
+import json
+import time
+from datetime import datetime
+import random
+import os
+import re
+import logging
+import csv
+
+# Configuração do logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def scrape_merito_comercial(url):
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
+    ]
+    
+    headers = {
+        'User-Agent': random.choice(user_agents),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0'
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        price_selectors = [
+            '.product-price .price', 
+            '.productPrice',
+            '.skuBestPrice',
+            '.valor-por',
+            '.price-current',
+            '[data-testid="price"]',
+            '.price',
+            '.product-page-price',
+            '.instant-price'
+        ]
+        
+        for selector in price_selectors:
+            price_element = soup.select_one(selector)
+            if price_element:
+                price_text = price_element.text.strip()
+                logging.info(f"Encontrado preço com seletor {selector}: {price_text}")
+                
+                price_text = re.sub(r'[^\d,]', '', price_text).replace(',', '.')
+                try:
+                    price = float(price_text)
+                    logging.info(f"Preço convertido: R$ {price:.2f}")
+                    
+                    product_name = None
+                    title_selectors = [
+                        'h1.product-name', 
+                        '.productName',
+                        '.product-title',
+                        '[data-testid="product-title"]'
+                    ]
+                    
+                    for title_selector in title_selectors:
+                        title_element = soup.select_one(title_selector)
+                        if title_element:
+                            product_name = title_element.text.strip()
+                            break
+                    
+                    return {
+                        'price': price,
+                        'product_name': product_name,
+                        'url': url,
+                        'date': datetime.now().strftime("%d/%m/%Y"),
+                        'timestamp': datetime.now().timestamp()
+                    }
+                except ValueError:
+                    logging.error(f"Não foi possível converter '{price_text}' para um número")
+        
+        logging.warning("Não foi possível encontrar o preço com os seletores conhecidos")
+        
+        precos_encontrados = re.findall(r'R\$\s*\d{1,3}(\.\d{3})*,\d{2}', response.text)
+        if precos_encontrados:
+            logging.info(f"Possível preço encontrado via regex: {precos_encontrados}")
+        
+        return None
+    except requests.Timeout:
+        logging.error("Timeout ao tentar acessar a página.")
+        return None
+    except requests.RequestException as e:
+        logging.error(f"Erro ao acessar a página: {e}")
+        return None
+
+def save_price_history(product_id, data):
+    filename = f"{product_id}_history.json"
+    
+    try:
+        if os.path.exists(filename):
+            with open(filename, "r", encoding="utf-8") as file:
+                history = json.load(file)
+        else:
+            history = []
+        
+        history.append(data)
+        
+        with open(filename, "w", encoding="utf-8") as file:
+            json.dump(history, file, indent=2, ensure_ascii=False)
+        
+        logging.info(f"Histórico atualizado para {product_id}")
+        return True
+    except Exception as e:
+        logging.error(f"Erro ao salvar histórico: {e}")
+        return False
+
+def save_to_csv(product_data):
+    filename = "precos_capturados.csv"
+    file_exists = os.path.isfile(filename)
+    
+    with open(filename, mode='a', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(["Produto", "Preço", "Data", "URL"])
+        writer.writerow([product_data['product_name'], product_data['price'], product_data['date'], product_data['url']])
+        logging.info("Dados salvos no CSV com sucesso.")
+
+products = [
+    {
+        'id': 'jacuzzi-1a-m',
+        'url': 'https://www.meritocomercial.com.br/bomba-para-piscina-jacuzzi-1a-m-1-cv-monofasica-110220v-ate-93600-litros-20400056026-p1019896'
+    },
+    {
+        'id': 'jacuzzi-15tq-m',
+        'url': 'https://www.meritocomercial.com.br/bomba-monoestagio-jacuzzi-15tq-m-15cv-monofasica-127220v-4001001001531-p1026676'
+    }
+]
+
+for product in products:
+    logging.info(f"Analisando produto: {product['id']}")
+    
+    if product != products[0]:
+        delay = random.uniform(3, 7)
+        logging.info(f"Aguardando {delay:.1f} segundos...")
+        time.sleep(delay)
+    
+    data = scrape_merito_comercial(product['url'])
+    
+    if data:
+        save_price_history(product['id'], data)
+        save_to_csv(data)
+    else:
+        logging.warning(f"Não foi possível obter dados para {product['id']}")
+    
+    logging.info("-" * 50)
